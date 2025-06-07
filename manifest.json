@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Put.io Magnet Manager",
+  "version": "1.0.0",
+  "description": "Detects magnet links and sends them to Put.io",
+  "permissions": [
+    "storage",
+    "contextMenus",
+    "activeTab",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://api.put.io/*",
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*/*",
+        "http://*/*"
+      ],
+      "js": ["logger.js", "utils.js", "content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Put.io Manager Settings"
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["icon.png"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
