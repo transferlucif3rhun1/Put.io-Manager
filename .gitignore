@@ -19,7 +19,6 @@ target/
 *.class
 *.jar
 Thumbs.db
-push-to-both.sh
 github-dual-setup
 *.token
 .secrets

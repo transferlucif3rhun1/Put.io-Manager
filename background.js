@@ -58,14 +58,25 @@ async function createContextMenu() {
   try {
     if (contextMenuCreated) return;
     await chrome.contextMenus.removeAll();
+    
+    // Context menu for links
     chrome.contextMenus.create({
-      id: 'sendToPutio',
-      title: 'Send to Put.io',
+      id: 'sendLinkToPutio',
+      title: 'Send link to Put.io',
       contexts: ['link'],
       documentUrlPatterns: ['https://*/*', 'http://*/*']
     });
+    
+    // Context menu for selected text
+    chrome.contextMenus.create({
+      id: 'sendTextToPutio',
+      title: 'Send to Put.io',
+      contexts: ['selection'],
+      documentUrlPatterns: ['https://*/*', 'http://*/*']
+    });
+    
     contextMenuCreated = true;
-    Logger.info('Background', 'Context menu created');
+    Logger.info('Background', 'Context menus created');
   } catch (error) {
     ErrorHandler.log('ContextMenuCreate', error);
   }
@@ -74,8 +85,8 @@ async function createContextMenu() {
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const startTime = Date.now();
   try {
-    if (info.menuItemId !== 'sendToPutio' || !info.linkUrl || !tab?.url) {
-      throw new Error('Invalid context menu state');
+    if (!tab?.url) {
+      throw new Error('Invalid tab state');
     }
     
     await ensureDomainsLoaded();
@@ -87,53 +98,115 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       return;
     }
     
-    let magnetLink = extractMagnetFromUrl(info.linkUrl);
+    let magnetLinks = [];
     
-    if (!magnetLink) {
-      try {
-        magnetLink = await fetchMagnetFromPage(info.linkUrl);
-      } catch (fetchError) {
-        ErrorHandler.log('PageFetch', fetchError, { url: info.linkUrl });
-        sendNotificationToTab(tab.id, 'Failed to fetch magnet link', 'error');
-        return;
+    // Handle link context menu
+    if (info.menuItemId === 'sendLinkToPutio' && info.linkUrl) {
+      let magnetLink = extractMagnetFromUrl(info.linkUrl);
+      
+      if (!magnetLink) {
+        try {
+          magnetLink = await fetchMagnetFromPage(info.linkUrl);
+        } catch (fetchError) {
+          ErrorHandler.log('PageFetch', fetchError, { url: info.linkUrl });
+          sendNotificationToTab(tab.id, 'Failed to fetch magnet link', 'error');
+          return;
+        }
+      }
+      
+      if (magnetLink) {
+        magnetLinks.push(magnetLink);
       }
     }
     
-    if (!magnetLink) {
-      sendNotificationToTab(tab.id, 'No magnet link found', 'warning');
+    // Handle text selection context menu
+    else if (info.menuItemId === 'sendTextToPutio' && info.selectionText) {
+      magnetLinks = extractMagnetLinksFromText(info.selectionText);
+    }
+    
+    if (magnetLinks.length === 0) {
+      sendNotificationToTab(tab.id, 'No magnet links found', 'warning');
       return;
     }
     
-    const magnetHash = extractMagnetHash(magnetLink);
-    if (!magnetHash) {
-      sendNotificationToTab(tab.id, 'Invalid magnet format', 'error');
-      return;
+    // Process all found magnet links
+    let successCount = 0;
+    let errorCount = 0;
+    let duplicateCount = 0;
+    
+    for (const magnetLink of magnetLinks) {
+      const magnetHash = extractMagnetHash(magnetLink);
+      if (!magnetHash) {
+        errorCount++;
+        continue;
+      }
+      
+      if (await isDuplicateMagnet(magnetHash)) {
+        duplicateCount++;
+        continue;
+      }
+      
+      const result = await sendWithRetry(() => sendToPutioAPI(magnetLink));
+      
+      if (result.success) {
+        await markMagnetSubmitted(magnetHash);
+        successCount++;
+      } else {
+        errorCount++;
+      }
     }
     
-    if (await isDuplicateMagnet(magnetHash)) {
-      sendNotificationToTab(tab.id, 'Already submitted', 'warning');
-      return;
-    }
-    
-    const result = await sendWithRetry(() => sendToPutioAPI(magnetLink));
-    
-    if (result.success) {
-      await markMagnetSubmitted(magnetHash);
-      sendNotificationToTab(tab.id, 'Sent to Put.io successfully', 'success');
+    // Send appropriate notification based on results
+    if (magnetLinks.length === 1) {
+      if (successCount === 1) {
+        sendNotificationToTab(tab.id, 'Sent to Put.io successfully', 'success');
+      } else if (duplicateCount === 1) {
+        sendNotificationToTab(tab.id, 'Already submitted', 'warning');
+      } else {
+        sendNotificationToTab(tab.id, 'Failed to send', 'error');
+      }
     } else {
-      sendNotificationToTab(tab.id, result.error || 'Failed to send', 'error');
+      // Multiple magnet links
+      const messages = [];
+      if (successCount > 0) messages.push(`${successCount} sent`);
+      if (duplicateCount > 0) messages.push(`${duplicateCount} duplicates`);
+      if (errorCount > 0) messages.push(`${errorCount} failed`);
+      
+      const message = messages.join(', ');
+      const type = successCount > 0 ? 'success' : (duplicateCount > 0 ? 'warning' : 'error');
+      sendNotificationToTab(tab.id, message, type);
     }
     
     Logger.info('ContextMenu', 'Processing completed', { 
-      success: result.success,
+      menuItemId: info.menuItemId,
+      total: magnetLinks.length,
+      success: successCount,
+      duplicates: duplicateCount,
+      errors: errorCount,
       duration: Date.now() - startTime 
     });
     
   } catch (error) {
-    ErrorHandler.log('ContextMenu', error, { linkUrl: info.linkUrl });
+    ErrorHandler.log('ContextMenu', error, { 
+      menuItemId: info.menuItemId,
+      linkUrl: info.linkUrl,
+      hasSelection: !!info.selectionText
+    });
     sendNotificationToTab(tab.id, 'Extension error occurred', 'error');
   }
 });
+
+function extractMagnetLinksFromText(text) {
+  try {
+    const magnetRegex = /magnet:\?xt=urn:btih:[a-zA-Z0-9]{32,40}[^\s"<>]*/gi;
+    const matches = text.match(magnetRegex) || [];
+    const uniqueMagnets = [...new Set(matches)];
+    return uniqueMagnets.filter(link => validateMagnetLink(link));
+  } catch (error) {
+    ErrorHandler.log('TextMagnetExtraction', error);
+    return [];
+  }
+}
 
 async function fetchMagnetFromPage(url) {
   try {
