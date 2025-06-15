@@ -8,20 +8,42 @@ let domainsReady = false;
 
 const ErrorHandler = {
   log(context, error) {
-    Logger.error('ContentScript', `${context}: ${error.message || error}`);
+    const errorMessage = error?.message || error || 'Unknown error';
+    Logger.error('ContentScript', `${context}: ${errorMessage}`);
+    console.error(`[Put.io Extension] ContentScript ${context}:`, errorMessage, error);
   }
 };
 
 async function initializeExtension() {
   try {
+    console.log('[Put.io Extension] Content script initializing...');
+    
     await ensureDomainsLoaded();
     domainsReady = true;
     isExtensionActive = isWhitelistedDomain();
+    
+    console.log('[Put.io Extension] Initialization status:', {
+      hostname: window.location.hostname,
+      isWhitelisted: isExtensionActive,
+      domainsReady: domainsReady,
+      whitelistedDomains: WHITELISTED_DOMAINS
+    });
     
     if (isExtensionActive) {
       addSimpleStyles();
       await injectIcons();
       startObserving();
+      
+      console.log('[Put.io Extension] Extension active - context menu and icons enabled');
+      Logger.info('ContentScript', 'Context menu ready for domain', { 
+        hostname: window.location.hostname,
+        isActive: isExtensionActive
+      });
+    } else {
+      console.log('[Put.io Extension] Domain not whitelisted - extension inactive');
+      Logger.warn('ContentScript', 'Domain not whitelisted for context menu', { 
+        hostname: window.location.hostname 
+      });
     }
     
     Logger.info('ContentScript', 'Initialized', { 
@@ -29,6 +51,7 @@ async function initializeExtension() {
       hostname: window.location.hostname,
       domainsReady: domainsReady
     });
+    
   } catch (error) {
     ErrorHandler.log('Initialize', error);
   }
@@ -207,6 +230,22 @@ function addSimpleStyles() {
       animation: putio-slide-out 0.3s ease forwards;
     }
     
+    .putio-debug-info {
+      position: fixed;
+      top: 100px;
+      right: 24px;
+      padding: 16px;
+      background: rgba(0, 0, 0, 0.9);
+      color: #00ff00;
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 12px;
+      border-radius: 8px;
+      z-index: 10001;
+      max-width: 400px;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    
     @keyframes putio-spin {
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
@@ -236,6 +275,7 @@ function addSimpleStyles() {
   `;
   
   document.head.appendChild(style);
+  console.log('[Put.io Extension] Styles added');
 }
 
 function determineIconSize(parentElement, magnetLink) {
@@ -468,6 +508,11 @@ async function markMagnetSubmitted(magnetHash) {
 async function sendMagnetToPutio(magnetLink, iconElement) {
   const magnetHash = extractMagnetHash(magnetLink);
   
+  console.log('[Put.io Extension] Sending magnet via icon click:', {
+    magnetHash,
+    magnetLink: magnetLink.substring(0, 100) + '...'
+  });
+  
   if (processingQueue.has(magnetHash)) {
     showNotification('Already processing this magnet', 'warning');
     return;
@@ -566,8 +611,9 @@ function setupIconClick(icon, magnetLink) {
   icon.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
+    console.log('[Put.io Extension] Icon clicked for magnet:', extractMagnetHash(magnetLink));
     sendMagnetToPutio(magnetLink, icon);
-  });
+  }, { passive: false });
 }
 
 function removeIcon(icon) {
@@ -594,13 +640,18 @@ async function injectIcons() {
   if (!isExtensionActive || !domainsReady) return;
   
   try {
+    console.log('[Put.io Extension] Injecting icons...');
+    
     const magnetLinks = document.querySelectorAll('a[href*="magnet:"]');
+    console.log('[Put.io Extension] Found', magnetLinks.length, 'magnet links');
     
     for (const link of magnetLinks) {
       await processLink(link);
     }
     
     await processTextMagnets();
+    
+    console.log('[Put.io Extension] Icon injection completed');
     
   } catch (error) {
     ErrorHandler.log('InjectIcons', error);
@@ -629,6 +680,7 @@ async function processLink(link) {
     if (link.parentNode) {
       link.parentNode.insertBefore(icon, link.nextSibling);
       injectedIcons.add(magnetHash);
+      console.log('[Put.io Extension] Icon injected for magnet:', magnetHash);
     }
     
   } catch (error) {
@@ -655,6 +707,8 @@ async function processTextMagnets() {
       textNodes.push(node);
     }
     
+    console.log('[Put.io Extension] Found', textNodes.length, 'text nodes with magnet links');
+    
     for (const textNode of textNodes) {
       if (!textNode.parentNode) continue;
       
@@ -678,6 +732,7 @@ async function processTextMagnets() {
           if (textNode.parentNode) {
             textNode.parentNode.insertBefore(icon, textNode.nextSibling);
             injectedIcons.add(magnetHash);
+            console.log('[Put.io Extension] Icon injected for text magnet:', magnetHash);
           }
         }
       }
@@ -695,6 +750,8 @@ function debouncedInject() {
 
 function startObserving() {
   if (observer || !isExtensionActive) return;
+  
+  console.log('[Put.io Extension] Starting DOM observer...');
   
   observer = new MutationObserver((mutations) => {
     let shouldInject = false;
@@ -715,6 +772,7 @@ function startObserving() {
     }
     
     if (shouldInject) {
+      console.log('[Put.io Extension] DOM changes detected, re-injecting icons...');
       debouncedInject();
     }
   });
@@ -727,6 +785,8 @@ function startObserving() {
 
 function showNotification(message, type, duration = 3000) {
   try {
+    console.log('[Put.io Extension] Showing notification:', { message, type });
+    
     const existing = document.querySelector('.putio-notification');
     if (existing) {
       existing.classList.add('slide-out');
@@ -756,11 +816,50 @@ function showNotification(message, type, duration = 3000) {
   }
 }
 
+function showDebugInfo(debugInfo) {
+  try {
+    console.log('[Put.io Extension] Showing debug info:', debugInfo);
+    
+    // Remove existing debug info
+    const existing = document.querySelector('.putio-debug-info');
+    if (existing) {
+      existing.remove();
+    }
+    
+    const debugDiv = document.createElement('div');
+    debugDiv.className = 'putio-debug-info';
+    debugDiv.textContent = JSON.stringify(debugInfo, null, 2);
+    
+    debugDiv.addEventListener('click', () => {
+      debugDiv.remove();
+    });
+    
+    document.body.appendChild(debugDiv);
+    
+    // Auto-remove after 10 seconds
+    setTimeout(() => {
+      if (debugDiv.parentNode) {
+        debugDiv.remove();
+      }
+    }, 10000);
+    
+  } catch (error) {
+    ErrorHandler.log('ShowDebugInfo', error);
+  }
+}
+
+// Handle messages from background script
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   try {
+    console.log('[Put.io Extension] Content script received message:', request);
+    
     switch (request.action) {
       case 'showNotification':
         showNotification(request.message, request.type);
+        break;
+        
+      case 'showDebugInfo':
+        showDebugInfo(request.debugInfo);
         break;
         
       case 'reloadWhitelist':
@@ -768,7 +867,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           const wasActive = isExtensionActive;
           isExtensionActive = isWhitelistedDomain();
           
+          console.log('[Put.io Extension] Whitelist reloaded:', {
+            wasActive,
+            nowActive: isExtensionActive,
+            hostname: window.location.hostname
+          });
+          
+          Logger.info('ContentScript', 'Whitelist reloaded', {
+            wasActive,
+            nowActive: isExtensionActive,
+            hostname: window.location.hostname
+          });
+          
           if (wasActive && !isExtensionActive) {
+            // Deactivate extension
             document.querySelectorAll('.putio-icon, .putio-loading, .putio-success, .putio-error')
               .forEach(el => el.remove());
             injectedIcons.clear();
@@ -778,6 +890,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
               observer = null;
             }
           } else if (!wasActive && isExtensionActive) {
+            // Activate extension
             addSimpleStyles();
             injectIcons();
             startObserving();
@@ -790,13 +903,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
+// Initialize when DOM is ready
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initializeExtension);
 } else {
   initializeExtension();
 }
 
+// Cleanup on page unload
 window.addEventListener('beforeunload', () => {
+  console.log('[Put.io Extension] Page unloading, cleaning up...');
   if (observer) {
     observer.disconnect();
   }
